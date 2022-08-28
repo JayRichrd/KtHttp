@@ -8,6 +8,8 @@ import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
+import org.apache.logging.log4j.LogManager
+import org.apache.logging.log4j.Logger
 import java.io.IOException
 import java.lang.Exception
 import java.lang.reflect.Method
@@ -17,16 +19,12 @@ import java.lang.reflect.Type
 
 // https://trendings.herokuapp.com/repo?lang=java&since=weekly
 
-interface Callback<T: Any> {
+interface Callback<T : Any> {
     fun onSuccess(data: T)
     fun onFail(throwable: Throwable)
 }
-
-class KtCall<T: Any>(
-    private val call: Call,
-    private val gson: Gson,
-    private val type: Type
-) {
+val loggerV3: Logger = LogManager.getLogger("KtHttpV3")
+class KtCall<T : Any>(private val call: Call, private val gson: Gson, private val type: Type) {
     fun call(callback: Callback<T>): Call {
         call.enqueue(object : okhttp3.Callback {
             override fun onFailure(call: Call, e: IOException) {
@@ -48,29 +46,20 @@ class KtCall<T: Any>(
 
 interface ApiServiceV3 {
     @GET("/repo")
-    fun repos(
-        @Field("lang") lang: String,
-        @Field("since") since: String
-    ): KtCall<RepoList>
+    fun repos(@Field("lang") lang: String, @Field("since") since: String): KtCall<RepoList>
 
     @GET("/repo")
-    fun reposSync(
-        @Field("lang") lang: String,
-        @Field("since") since: String
-    ): RepoList
+    fun reposSync(@Field("lang") lang: String, @Field("since") since: String): RepoList
 }
 
 object KtHttpV3 {
-
     private var okHttpClient: OkHttpClient = OkHttpClient()
     private var gson: Gson = Gson()
     var baseUrl = "https://trendings.herokuapp.com"
 
-    fun <T: Any> create(service: Class<T>): T {
-        return Proxy.newProxyInstance(
-            service.classLoader,
-            arrayOf<Class<*>>(service)
-        ) { proxy, method, args ->
+    @Suppress("UNCHECKED_CAST")
+    fun <T : Any> create(service: Class<T>): T {
+        return Proxy.newProxyInstance(service.classLoader, arrayOf<Class<*>>(service)) { _, method, args ->
             val annotations = method.annotations
             for (annotation in annotations) {
                 if (annotation is GET) {
@@ -83,50 +72,45 @@ object KtHttpV3 {
         } as T
     }
 
-private fun <T: Any> invoke(path: String, method: Method, args: Array<Any>): Any? {
-    if (method.parameterAnnotations.size != args.size) return null
+    private fun <T : Any> invoke(path: String, method: Method, args: Array<Any>): Any? {
+        if (method.parameterAnnotations.size != args.size) return null
 
-    var url = path
-    val parameterAnnotations = method.parameterAnnotations
-    for (i in parameterAnnotations.indices) {
-        for (parameterAnnotation in parameterAnnotations[i]) {
-            if (parameterAnnotation is Field) {
-                val key = parameterAnnotation.value
-                val value = args[i].toString()
-                if (!url.contains("?")) {
-                    url += "?$key=$value"
-                } else {
-                    url += "&$key=$value"
+        var url = path
+        val parameterAnnotations = method.parameterAnnotations
+        for (i in parameterAnnotations.indices) {
+            for (parameterAnnotation in parameterAnnotations[i]) {
+                if (parameterAnnotation is Field) {
+                    val key = parameterAnnotation.value
+                    val value = args[i].toString()
+                    url += if (!url.contains("?")) {
+                        "?$key=$value"
+                    } else {
+                        "&$key=$value"
+                    }
+
                 }
-
             }
+        }
+
+        val request = Request.Builder().url(url).build()
+
+        val call = okHttpClient.newCall(request)
+
+        return if (isKtCallReturn(method)) {
+            val genericReturnType = getTypeArgument(method)
+            KtCall<T>(call, gson, genericReturnType)
+        } else {
+            val response = okHttpClient.newCall(request).execute()
+
+            val genericReturnType = method.genericReturnType
+            val json = response.body?.string()
+            gson.fromJson<Any?>(json, genericReturnType)
         }
     }
 
-    val request = Request.Builder()
-        .url(url)
-        .build()
+    private fun getTypeArgument(method: Method) = (method.genericReturnType as ParameterizedType).actualTypeArguments[0]
 
-    val call = okHttpClient.newCall(request)
-
-    return if (isKtCallReturn(method)) {
-        val genericReturnType = getTypeArgument(method)
-        KtCall<T>(call, gson, genericReturnType)
-    } else {
-        val response = okHttpClient.newCall(request).execute()
-
-        val genericReturnType = method.genericReturnType
-        val json = response.body?.string()
-        gson.fromJson<Any?>(json, genericReturnType)
-    }
-}
-
-private fun getTypeArgument(method: Method) =
-    (method.genericReturnType as ParameterizedType).actualTypeArguments[0]
-
-private fun isKtCallReturn(method: Method) =
-    getRawType(method.genericReturnType) == KtCall::class.java
-
+    private fun isKtCallReturn(method: Method) = getRawType(method.genericReturnType) == KtCall::class.java
 }
 
 fun main() {
@@ -141,16 +125,13 @@ private fun testSync() {
 }
 
 private fun testAsync() {
-    KtHttpV3.create(ApiServiceV3::class.java).repos(
-        lang = "Kotlin",
-        since = "weekly"
-    ).call(object : Callback<RepoList> {
+    KtHttpV3.create(ApiServiceV3::class.java).repos(lang = "Kotlin", since = "weekly").call(object : Callback<RepoList> {
         override fun onSuccess(data: RepoList) {
-            println(data)
+            loggerV3.debug(data)
         }
 
         override fun onFail(throwable: Throwable) {
-            println(throwable)
+            loggerV3.error(throwable)
         }
     })
 }

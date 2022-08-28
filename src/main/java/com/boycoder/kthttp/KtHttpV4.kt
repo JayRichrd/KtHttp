@@ -18,6 +18,8 @@ import java.lang.reflect.Proxy
 import java.lang.reflect.Type
 import kotlin.coroutines.suspendCoroutine
 import kotlinx.coroutines.*
+import org.apache.logging.log4j.LogManager
+import org.apache.logging.log4j.Logger
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.system.measureTimeMillis
@@ -55,50 +57,49 @@ import kotlin.system.measureTimeMillis
 //            }
 //        })
 //    }
-
-suspend fun <T : Any> KtCall<T>.await(): T =
-    suspendCancellableCoroutine { continuation ->
-        val call = call(object : Callback<T> {
-            override fun onSuccess(data: T) {
-                println("Request success!")
-                continuation.resume(data)
-            }
-
-            override fun onFail(throwable: Throwable) {
-                println("Request fail!：$throwable")
-                continuation.resumeWithException(throwable)
-            }
-        })
-
-        continuation.invokeOnCancellation {
-            println("Call cancelled!")
-            call.cancel()
+val loggerV4: Logger = LogManager.getLogger("KtHttpV4")
+suspend fun <T : Any> KtCall<T>.await(): T = suspendCancellableCoroutine { continuation ->
+    val call = call(object : Callback<T> {
+        override fun onSuccess(data: T) {
+            loggerV4.debug("Request success!")
+            //println("Request success!")
+            continuation.resume(data)
         }
+
+        override fun onFail(throwable: Throwable) {
+            loggerV4.error("Request fail!：$throwable")
+            continuation.resumeWithException(throwable)
+        }
+    })
+
+    continuation.invokeOnCancellation {
+        loggerV4.debug("Call cancelled!")
+        call.cancel()
     }
+}
 
 fun main() = runBlocking {
     val start = System.currentTimeMillis()
     val deferred = async {
-        KtHttpV3.create(ApiServiceV3::class.java)
-            .repos(lang = "Kotlin", since = "weekly")
-            .await()
+        KtHttpV3.create(ApiServiceV3::class.java).repos(lang = "Kotlin", since = "weekly").await()
     }
 
     deferred.invokeOnCompletion {
-        println("invokeOnCompletion!")
+        loggerV4.error("invokeOnCompletion: error msg: ${it?.localizedMessage}")
     }
     delay(50L)
 
-    deferred.cancel()
-    println("Time cancel: ${System.currentTimeMillis() - start}")
+    //deferred.cancel()
+    loggerV4.debug("Time cancel: ${System.currentTimeMillis() - start}")
 
     try {
-        println(deferred.await())
+        val result = deferred.await()
+        loggerV4.debug(result)
     } catch (e: Exception) {
-        println("Time exception: ${System.currentTimeMillis() - start}")
-        println("Catch exception:$e")
+        loggerV4.error("Time exception: ${System.currentTimeMillis() - start}")
+        loggerV4.error("Catch exception:$e")
     } finally {
-        println("Time total: ${System.currentTimeMillis() - start}")
+        loggerV4.debug("Time total: ${System.currentTimeMillis() - start}")
     }
 }
 

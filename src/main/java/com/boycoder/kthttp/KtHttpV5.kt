@@ -12,32 +12,26 @@ import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.flow.*
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.apache.logging.log4j.LogManager
+import org.apache.logging.log4j.Logger
 import java.lang.reflect.Method
 import java.lang.reflect.ParameterizedType
 import java.lang.reflect.Proxy
 import kotlin.concurrent.thread
 
 // https://trendings.herokuapp.com/repo?lang=java&since=weekly
+val loggerV5: Logger = LogManager.getLogger("KtHttpV5")
 
 interface ApiServiceV5 {
     @GET("/repo")
-    fun repos(
-        @Field("lang") lang: String,
-        @Field("since") since: String
-    ): KtCall<RepoList>
+    fun repos(@Field("lang") lang: String, @Field("since") since: String): KtCall<RepoList>
 
     @GET("/repo")
-    fun reposSync(
-        @Field("lang") lang: String,
-        @Field("since") since: String
-    ): RepoList
+    fun reposSync(@Field("lang") lang: String, @Field("since") since: String): RepoList
 
 
     @GET("/repo")
-    fun reposFlow(
-        @Field("lang") lang: String,
-        @Field("since") since: String
-    ): Flow<RepoList>
+    fun reposFlow(@Field("lang") lang: String, @Field("since") since: String): Flow<RepoList>
 }
 
 object KtHttpV5 {
@@ -46,11 +40,9 @@ object KtHttpV5 {
     private var gson: Gson = Gson()
     var baseUrl = "https://trendings.herokuapp.com"
 
+    @Suppress("UNCHECKED_CAST")
     fun <T : Any> create(service: Class<T>): T {
-        return Proxy.newProxyInstance(
-            service.classLoader,
-            arrayOf<Class<*>>(service)
-        ) { proxy, method, args ->
+        return Proxy.newProxyInstance(service.classLoader, arrayOf<Class<*>>(service)) { proxy, method, args ->
             val annotations = method.annotations
             for (annotation in annotations) {
                 if (annotation is GET) {
@@ -73,19 +65,17 @@ object KtHttpV5 {
                 if (parameterAnnotation is Field) {
                     val key = parameterAnnotation.value
                     val value = args[i].toString()
-                    if (!url.contains("?")) {
-                        url += "?$key=$value"
+                    url += if (!url.contains("?")) {
+                        "?$key=$value"
                     } else {
-                        url += "&$key=$value"
+                        "&$key=$value"
                     }
 
                 }
             }
         }
 
-        val request = Request.Builder()
-            .url(url)
-            .build()
+        val request = Request.Builder().url(url).build()
 
         val call = okHttpClient.newCall(request)
 
@@ -101,35 +91,33 @@ object KtHttpV5 {
         }
     }
 
-    private fun getTypeArgument(method: Method) =
-        (method.genericReturnType as ParameterizedType).actualTypeArguments[0]
+    private fun getTypeArgument(method: Method) = (method.genericReturnType as ParameterizedType).actualTypeArguments[0]
 
-    private fun isKtCallReturn(method: Method) =
-        getRawType(method.genericReturnType) == KtCall::class.java
+    private fun isKtCallReturn(method: Method) = getRawType(method.genericReturnType) == KtCall::class.java
 }
 
 fun <T : Any> KtCall<T>.asFlow1(): Flow<T> = callbackFlow {
 
     val job = launch {
-        println("Coroutine start")
+        loggerV5.debug("Coroutine start")
         delay(3000L)
-        println("Coroutine end")
+        loggerV5.debug("Coroutine end")
     }
 
     job.invokeOnCompletion {
-        println("Coroutine completed $it")
+        loggerV5.debug("Coroutine completed $it")
     }
 
     val call = call(object : Callback<T> {
         override fun onSuccess(data: T) {
-            trySendBlocking(data)
-                .onSuccess { close() }
-                .onFailure {
-                    cancel(CancellationException("Send channel fail!", it))
-                }
+            loggerV5.debug("get data success.")
+            trySendBlocking(data).onSuccess { close() }.onFailure {
+                cancel(CancellationException("Send channel fail!", it))
+            }
         }
 
         override fun onFail(throwable: Throwable) {
+            loggerV5.error("get data failed!")
             cancel(CancellationException("Request fail!", throwable))
         }
     })
@@ -142,11 +130,9 @@ fun <T : Any> KtCall<T>.asFlow1(): Flow<T> = callbackFlow {
 fun <T : Any> KtCall<T>.asFlow(): Flow<T> = callbackFlow {
     val call = call(object : Callback<T> {
         override fun onSuccess(data: T) {
-            trySendBlocking(data)
-                .onSuccess { close() }
-                .onFailure {
-                    cancel(CancellationException("Send channel fail!", it))
-                }
+            trySendBlocking(data).onSuccess { close() }.onFailure {
+                cancel(CancellationException("Send channel fail!", it))
+            }
         }
 
         override fun onFail(throwable: Throwable) {
@@ -172,12 +158,10 @@ fun <T : Any> KtCall<T>.asFlowTest(value: T): Flow<T> = callbackFlow {
     println("Start")
     test(object : Callback<T> {
         override fun onSuccess(data: T) {
-            trySendBlocking(data)
-                .onSuccess {
+            trySendBlocking(data).onSuccess {
                     println("Send success")
 //                    close()
-                }
-                .onFailure {
+                }.onFailure {
                     close()
                 }
         }
@@ -196,13 +180,8 @@ fun main() = runBlocking {
 }
 
 private suspend fun testAsFlow() =
-    KtHttpV5.create(ApiServiceV5::class.java)
-        .repos(lang = "Kotlin", since = "weekly")
-        .asFlow1()
-        .catch { println("Catch: $it") }
-        .collect {
-            println(it)
-        }
+    KtHttpV5.create(ApiServiceV5::class.java).repos(lang = "Kotlin", since = "weekly").asFlow1().catch { loggerV5.error("Catch: $it") }
+        .collect { loggerV5.debug(it) }
 
 /**
  * 控制台输出带协程信息的log
